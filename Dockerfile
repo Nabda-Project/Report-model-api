@@ -2,10 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including cmake and build tools for llama-cpp-python
 RUN apt-get update && apt-get install -y \
     git \
     curl \
+    cmake \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
