@@ -25,7 +25,7 @@ snapshot_download( \
     repo_id=os.environ.get('HF_REPO_ID', '${HF_REPO_ID}'), \
     local_dir='/app/model', \
     token=os.environ.get('HF_TOKEN', '${HF_TOKEN}'), \
-    revision="Q4_K_M-gguf" \
+    revision='Q4_K_M-gguf' \
 )"
 
 # Copy app code
