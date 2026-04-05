@@ -5,7 +5,7 @@ import logging
 from fastapi import FastAPI, HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
-from llama_cpp import Llama
+from llama_cpp import Llama, LlamaGrammar  # Added LlamaGrammar
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
@@ -32,7 +32,31 @@ llm = Llama(
     n_threads=2,
     verbose=False
 )
-logger.info("Model loaded successfully.")
+
+# ── Grammar Setup ─────────────────────────────────────────────────────────────
+# Define the expected JSON structure globally so it's only compiled once
+MED_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "symptoms": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "symptom": {"type": "string"},
+                    "severity": {"type": ["string", "null"]}
+                },
+                "required": ["symptom", "severity"]
+            }
+        },
+        "notes": {"type": "string"}
+    },
+    "required": ["symptoms", "notes"]
+}
+# Pre-compile the grammar for speed
+grammar = LlamaGrammar.from_json_schema(json.dumps(MED_SCHEMA))
+
+logger.info("Model and Grammar loaded successfully.")
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 class GenerateRequest(BaseModel):
@@ -45,15 +69,19 @@ class GenerateResponse(BaseModel):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def extract_json(text: str) -> dict:
     """Extract the first valid JSON object from model output."""
+    # Try direct parse first
+    text_clean = text.strip()
     try:
-        return json.loads(text.strip())
+        return json.loads(text_clean)
     except json.JSONDecodeError:
         pass
 
-    match = re.search(r'\{.*\}', text, re.DOTALL)
+    # Use NON-GREEDY match (.*?) to find the FIRST complete JSON object
+    # This prevents grabbing multiple looped objects at once
+    match = re.search(r'(\{.*?\})', text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group())
+            return json.loads(match.group(1))
         except json.JSONDecodeError:
             pass
 
@@ -67,19 +95,22 @@ def health():
 @app.post("/generate", response_model=GenerateResponse)
 def generate(req: GenerateRequest, key: str = Security(verify_api_key)):
     try:
-        # Format input using the correct chat template
-        prompt = f"<|im_start|>user\n{req.text}\n<|im_start|>assistant"
+        # 1. Improved prompt with a newline to trigger better generation
+        prompt = f"<|im_start|>user\n{req.text}\n<|im_start|>assistant\n"
 
+        # 2. Augmented LLM call
         output = llm(
             prompt,
             max_tokens=req.max_tokens,
-            temperature=0.1,    # low = more deterministic, better for JSON
-            echo=False          # don't repeat the prompt in the output
+            temperature=0.1,
+            grammar=grammar,            # Forces valid JSON and stops loops
+            echo=False
         )
 
         raw_output = output["choices"][0]["text"]
         logger.info(f"Raw model output: {raw_output[:200]}")
 
+        # 3. Process result
         result = extract_json(raw_output)
         return GenerateResponse(result=result)
 
