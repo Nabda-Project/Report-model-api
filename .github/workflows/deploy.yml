@@ -37,23 +37,27 @@ jobs:
           docker push ziadmo/med-report-api:latest
           docker push ziadmo/med-report-api:${{ github.sha }}
 
-      # # 5. Login to Azure
-      # - name: Login to Azure
-      #   uses: azure/login@v1
-      #   with:
-      #     creds: ${{ secrets.AZURE_CREDENTIALS }}
+      # 5. Login to Azure
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # # 6. Deploy to Azure Container Instance
-      # - name: Deploy to Azure Container Instance
-      #   run: |
-      #     az container create \
-      #       --name med-report-api \
-      #       --resource-group med-report-rg \
-      #       --image ziadmo/med-report-api:latest \
-      #       --cpu 2 \
-      #       --memory 8 \
-      #       --ports 8000 \
-      #       --ip-address public \
-      #       --environment-variables API_KEY=${{ secrets.API_KEY }} \
-      #       --restart-policy Always \
-      #       --os-type Linux
+      # 6. Deploy to Azure Container Instance
+      - name: Deploy to Azure Container Instance
+        run: |
+          az container create \
+            --name med-report-api \
+            --resource-group med-report-rg \
+            --image ziadmo/med-report-api:latest \
+            --cpu 2 --memory 8 \
+            --ports 8000 \
+            --ip-address public \
+            --dns-name-label med-report-api \
+            --dns-name-label-reuse-policy TenantReuse \
+            --environment-variables API_KEY=${{ secrets.API_KEY }} \
+            --restart-policy Always \
+            --os-type Linux \
+            --registry-login-server index.docker.io \
+            --registry-username ziadmo \
+            --registry-password ${{ secrets.DOCKERHUB_TOKEN }}
