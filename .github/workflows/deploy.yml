@@ -53,8 +53,6 @@ jobs:
             --cpu 2 --memory 8 \
             --ports 8000 \
             --ip-address public \
-            --dns-name-label med-report-api \
-            --dns-name-label-reuse-policy TenantReuse \
             --environment-variables API_KEY=${{ secrets.API_KEY }} \
             --restart-policy Always \
             --os-type Linux \
