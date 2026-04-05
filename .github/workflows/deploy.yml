@@ -1,0 +1,59 @@
+name: Build & Deploy to Azure
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout your code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ziadmo
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 3. Build Docker image
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg HF_TOKEN=${{ secrets.HF_TOKEN }} \
+            --build-arg HF_REPO_ID=${{ secrets.HF_REPO_ID }} \
+            -t ziadmo/med-report-api:latest \
+            -t ziadmo/med-report-api:${{ github.sha }} \
+            .
+
+      # 4. Push to Docker Hub
+      - name: Push to Docker Hub
+        run: |
+          docker push ziadmo/med-report-api:latest
+          docker push ziadmo/med-report-api:${{ github.sha }}
+
+      # # 5. Login to Azure
+      # - name: Login to Azure
+      #   uses: azure/login@v1
+      #   with:
+      #     creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # # 6. Deploy to Azure Container Instance
+      # - name: Deploy to Azure Container Instance
+      #   run: |
+      #     az container create \
+      #       --name med-report-api \
+      #       --resource-group med-report-rg \
+      #       --image ziadmo/med-report-api:latest \
+      #       --cpu 2 \
+      #       --memory 8 \
+      #       --ports 8000 \
+      #       --ip-address public \
+      #       --environment-variables API_KEY=${{ secrets.API_KEY }} \
+      #       --restart-policy Always \
+      #       --os-type Linux
