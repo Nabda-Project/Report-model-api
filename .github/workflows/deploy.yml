@@ -58,4 +58,5 @@ jobs:
             --os-type Linux \
             --registry-login-server index.docker.io \
             --registry-username ziadmo \
-            --registry-password ${{ secrets.DOCKERHUB_TOKEN }}
+            --registry-password ${{ secrets.DOCKERHUB_TOKEN }} \
+            --dns-name-label med-report-api
