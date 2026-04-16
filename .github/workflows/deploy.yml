@@ -68,7 +68,7 @@ jobs:
         with:
           task-definition-family: ${{ env.TASK_DEFINITION_FAMILY }}
           container-name: ${{ env.CONTAINER_NAME }}
-          image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          image: ziadmo/med-report-api:${{ github.sha }}
 
       # 7. Register new task definition
       - name: Deploy to ECS
