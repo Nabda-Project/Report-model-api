@@ -9,7 +9,7 @@
     AWS_REGION: us-east-1
     ECS_CLUSTER: med-report-cluster
     ECS_SERVICE: med-report-service
-    CONTAINER_NAME: med-report-api
+    CONTAINER_NAME: Main
     IMAGE_NAME: ziadmo/med-report-api
 
   jobs:
