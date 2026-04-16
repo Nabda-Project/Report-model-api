@@ -67,9 +67,9 @@
           id: task-def
           uses: aws-actions/amazon-ecs-render-task-definition@v1
           with:
-            task-definition: task-definition.json
+            task-definition-family: ${{ env.TASK_DEFINITION_FAMILY }}
             container-name: ${{ env.CONTAINER_NAME }}
-            image: ${{ steps.build-image.outputs.image }}
+            image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
 
         - name: Deploy to ECS
           uses: aws-actions/amazon-ecs-deploy-task-definition@v2
