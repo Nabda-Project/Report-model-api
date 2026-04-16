@@ -70,7 +70,7 @@
           with:
             task-definition: task-definition.json
             container-name: ${{ env.CONTAINER_NAME }}
-            image: ${{ steps.build-image.outputs.image }}
+            image: ziadmo/med-report-api:${{ github.sha }}
 
         # 7. Deploy updated task definition to ECS
         - name: Deploy to ECS
