@@ -1,62 +1,82 @@
-name: Build & Deploy to Azure
+  name: Build & Deploy to AWS ECS
 
-on:
-  push:
-    branches:
-      - main
+  on:
+    push:
+      branches:
+        - main
 
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
+  env:
+    AWS_REGION: us-east-1
+    ECS_CLUSTER: med-report-cluster
+    ECS_SERVICE: med-report-service
+    CONTAINER_NAME: med-report-api
+    IMAGE_NAME: ziadmo/med-report-api
 
-    steps:
-      # 1. Checkout your code
-      - name: Checkout code
-        uses: actions/checkout@v4
+  jobs:
+    build-and-deploy:
+      runs-on: ubuntu-latest
 
-      # 2. Login to Docker Hub
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ziadmo
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      permissions:
+        id-token: write   # needed for OIDC auth with AWS
+        contents: read
 
-      # 3. Build Docker image
-      - name: Build Docker image
-        run: |
-          docker build \
-            --build-arg HF_TOKEN=${{ secrets.HF_TOKEN }} \
-            --build-arg HF_REPO_ID=${{ secrets.HF_REPO_ID }} \
-            -t ziadmo/med-report-api:latest \
-            -t ziadmo/med-report-api:${{ github.sha }} \
-            .
+      steps:
+        # 1. Checkout code
+        - name: Checkout code
+          uses: actions/checkout@v4
 
-      # 4. Push to Docker Hub
-      - name: Push to Docker Hub
-        run: |
-          docker push ziadmo/med-report-api:latest
-          docker push ziadmo/med-report-api:${{ github.sha }}
+        # 2. Login to Docker Hub
+        - name: Login to Docker Hub
+          uses: docker/login-action@v3
+          with:
+            username: ziadmo
+            password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 5. Login to Azure
-      - name: Login to Azure
-        uses: azure/login@v1
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+        # 3. Build Docker image
+        - name: Build Docker image
+          run: |
+            docker build \
+              --build-arg HF_TOKEN=${{ secrets.HF_TOKEN }} \
+              --build-arg HF_REPO_ID=${{ secrets.HF_REPO_ID }} \
+              -t ziadmo/med-report-api:latest \
+              -t ziadmo/med-report-api:${{ github.sha }} \
+              .
 
-      # 6. Deploy to Azure Container Instance
-      - name: Deploy to Azure Container Instance
-        run: |
-          az container create \
-            --name med-report-api \
-            --resource-group med-report-rg \
-            --image ziadmo/med-report-api:latest \
-            --cpu 2 --memory 8 \
-            --ports 8000 \
-            --ip-address public \
-            --environment-variables API_KEY=${{ secrets.API_KEY }} \
-            --restart-policy Always \
-            --os-type Linux \
-            --registry-login-server index.docker.io \
-            --registry-username ziadmo \
-            --registry-password ${{ secrets.DOCKERHUB_TOKEN }} \
-            --dns-name-label med-report-api
+        # 4. Push to Docker Hub
+        - name: Push to Docker Hub
+          run: |
+            docker push ziadmo/med-report-api:latest
+            docker push ziadmo/med-report-api:${{ github.sha }}
+
+        # 4. Configure AWS credentials (via OIDC)
+        - name: Configure AWS credentials
+          uses: aws-actions/configure-aws-credentials@v4
+          with:
+            role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+            aws-region: ${{ env.AWS_REGION }}
+
+        # 5. Download current ECS task definition
+        - name: Download task definition
+          run: |
+            aws ecs describe-task-definition \
+              --task-definition med-report-api \
+              --query taskDefinition \
+              > task-definition.json
+
+        # 6. Inject the new image into the task definition
+        - name: Update ECS task definition with new image
+          id: task-def
+          uses: aws-actions/amazon-ecs-render-task-definition@v1
+          with:
+            task-definition: task-definition.json
+            container-name: ${{ env.CONTAINER_NAME }}
+            image: ${{ steps.build-image.outputs.image }}
+
+        # 7. Deploy updated task definition to ECS
+        - name: Deploy to ECS
+          uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+          with:
+            task-definition: ${{ steps.task-def.outputs.task-definition }}
+            service: ${{ env.ECS_SERVICE }}
+            cluster: ${{ env.ECS_CLUSTER }}
+            wait-for-service-stability: true
