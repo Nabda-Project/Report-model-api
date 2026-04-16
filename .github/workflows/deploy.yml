@@ -50,31 +50,31 @@
             cache-from: type=registry,ref=${{ env.CACHE_IMAGE }}
             cache-to: type=registry,ref=${{ env.CACHE_IMAGE }},mode=max
 
-        - name: Configure AWS credentials
-          uses: aws-actions/configure-aws-credentials@v4
-          with:
-            role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-            aws-region: ${{ env.AWS_REGION }}
+        # - name: Configure AWS credentials
+        #   uses: aws-actions/configure-aws-credentials@v4
+        #   with:
+        #     role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        #     aws-region: ${{ env.AWS_REGION }}
 
-        - name: Download task definition
-          run: |
-            aws ecs describe-task-definition \
-              --task-definition med-report-api \
-              --query taskDefinition \
-              > task-definition.json
+        # - name: Download task definition
+        #   run: |
+        #     aws ecs describe-task-definition \
+        #       --task-definition med-report-api \
+        #       --query taskDefinition \
+        #       > task-definition.json
 
-        - name: Update ECS task definition with new image
-          id: task-def
-          uses: aws-actions/amazon-ecs-render-task-definition@v1
-          with:
-            task-definition-family: ${{ env.TASK_DEFINITION_FAMILY }}
-            container-name: ${{ env.CONTAINER_NAME }}
-            image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+        # - name: Update ECS task definition with new image
+        #   id: task-def
+        #   uses: aws-actions/amazon-ecs-render-task-definition@v1
+        #   with:
+        #     task-definition-family: ${{ env.TASK_DEFINITION_FAMILY }}
+        #     container-name: ${{ env.CONTAINER_NAME }}
+        #     image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
 
-        - name: Deploy to ECS
-          uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-          with:
-            task-definition: ${{ steps.task-def.outputs.task-definition }}
-            service: ${{ env.ECS_SERVICE }}
-            cluster: ${{ env.ECS_CLUSTER }}
-            wait-for-service-stability: true
+        # - name: Deploy to ECS
+        #   uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        #   with:
+        #     task-definition: ${{ steps.task-def.outputs.task-definition }}
+        #     service: ${{ env.ECS_SERVICE }}
+        #     cluster: ${{ env.ECS_CLUSTER }}
+        #     wait-for-service-stability: true
