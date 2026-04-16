@@ -10,7 +10,7 @@
     ECS_CLUSTER: med-report-cluster
     ECS_SERVICE: med-report-service
     CONTAINER_NAME: Main
-    IMAGE_NAME: ziadmo/med-report-api
+    TASK_DEFINITION_FAMILY: med-report-cluster-med-report-service
 
   jobs:
     build-and-deploy:
@@ -55,24 +55,16 @@
             role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
             aws-region: ${{ env.AWS_REGION }}
 
-        # 5. Download current ECS task definition
-        - name: Download task definition
-          run: |
-            aws ecs describe-task-definition \
-              --task-definition med-report-api \
-              --query taskDefinition \
-              > task-definition.json
-
-        # 6. Inject the new image into the task definition
+        # 5. Inject the new image into the task definition
         - name: Update ECS task definition with new image
           id: task-def
           uses: aws-actions/amazon-ecs-render-task-definition@v1
           with:
-            task-definition: task-definition.json
+            task-definition-family: ${{ env.TASK_DEFINITION_FAMILY }}
             container-name: ${{ env.CONTAINER_NAME }}
             image: ziadmo/med-report-api:${{ github.sha }}
 
-        # 7. Deploy updated task definition to ECS
+        # 6. Deploy updated task definition to ECS
         - name: Deploy to ECS
           uses: aws-actions/amazon-ecs-deploy-task-definition@v1
           with:
