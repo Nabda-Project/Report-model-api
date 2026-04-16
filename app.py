@@ -17,21 +17,20 @@ app = FastAPI(title="Med Report API", version="1.0.0")
 API_KEY = os.environ.get("API_KEY", "change-me-please")
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=True)
 
+
 def verify_api_key(key: str = Security(api_key_header)):
     if key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return key
 
+
 # ── Load Model ────────────────────────────────────────────────────────────────
-GGUF_PATH = os.environ.get("GGUF_PATH", "/app/model/qwen3-4b-doctor-assistant.Q4_K_M.gguf")
+GGUF_PATH = os.environ.get(
+    "GGUF_PATH", "/app/model/qwen3-4b-doctor-assistant.Q4_K_M.gguf"
+)
 
 logger.info(f"Loading model from {GGUF_PATH} ...")
-llm = Llama(
-    model_path=GGUF_PATH,
-    n_ctx=2048,
-    n_threads=2,
-    verbose=False
-)
+llm = Llama(model_path=GGUF_PATH, n_ctx=2048, n_threads=4, verbose=False)
 
 # ── Grammar Setup ─────────────────────────────────────────────────────────────
 # Define the expected JSON structure globally so it's only compiled once
@@ -44,27 +43,30 @@ MED_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "symptom": {"type": "string"},
-                    "severity": {"type": ["string", "null"]}
+                    "severity": {"type": ["string", "null"]},
                 },
-                "required": ["symptom", "severity"]
-            }
+                "required": ["symptom", "severity"],
+            },
         },
-        "notes": {"type": "string"}
+        "notes": {"type": "string"},
     },
-    "required": ["symptoms", "notes"]
+    "required": ["symptoms", "notes"],
 }
 # Pre-compile the grammar for speed
 grammar = LlamaGrammar.from_json_schema(json.dumps(MED_SCHEMA))
 
 logger.info("Model and Grammar loaded successfully.")
 
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
 class GenerateRequest(BaseModel):
     text: str
     max_tokens: int = 512
 
+
 class GenerateResponse(BaseModel):
     result: dict
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def extract_json(text: str) -> dict:
@@ -78,7 +80,7 @@ def extract_json(text: str) -> dict:
 
     # Use NON-GREEDY match (.*?) to find the FIRST complete JSON object
     # This prevents grabbing multiple looped objects at once
-    match = re.search(r'(\{.*?\})', text, re.DOTALL)
+    match = re.search(r"(\{.*?\})", text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(1))
@@ -87,10 +89,12 @@ def extract_json(text: str) -> dict:
 
     raise ValueError(f"No valid JSON found in model output:\n{text}")
 
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 
 @app.post("/generate", response_model=GenerateResponse)
 def generate(req: GenerateRequest, key: str = Security(verify_api_key)):
@@ -103,8 +107,8 @@ def generate(req: GenerateRequest, key: str = Security(verify_api_key)):
             prompt,
             max_tokens=req.max_tokens,
             temperature=0.1,
-            grammar=grammar,            # Forces valid JSON and stops loops
-            echo=False
+            grammar=grammar,  # Forces valid JSON and stops loops
+            echo=False,
         )
 
         raw_output = output["choices"][0]["text"]
