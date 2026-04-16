@@ -1,75 +1,86 @@
-  name: Build & Deploy to AWS ECS
+name: Build & Deploy to AWS ECS
 
-  on:
-    push:
-      branches:
-        - main
+on:
+  push:
+    branches:
+      - main
 
-  env:
-    AWS_REGION: us-east-1
-    ECS_CLUSTER: med-report-cluster
-    ECS_SERVICE: med-report-service
-    CONTAINER_NAME: Main
-    TASK_DEFINITION_FAMILY: med-report-cluster-med-report-service
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: med-report-cluster
+  ECS_SERVICE: med-report-service
+  CONTAINER_NAME: Main
+  TASK_DEFINITION_FAMILY: med-report-cluster-med-report-service
+  DOCKERHUB_USERNAME: ziadmo
+  IMAGE_NAME: ziadmo/med-report-api
+  CACHE_IMAGE: ziadmo/med-report-api:buildcache
 
-  jobs:
-    build-and-deploy:
-      runs-on: ubuntu-latest
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
 
-      permissions:
-        id-token: write   # needed for OIDC auth with AWS
-        contents: read
+    permissions:
+      id-token: write
+      contents: read
 
-      steps:
-        # 1. Checkout code
-        - name: Checkout code
-          uses: actions/checkout@v4
+    steps:
+      # 1. Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-        # 2. Login to Docker Hub
-        - name: Login to Docker Hub
-          uses: docker/login-action@v3
-          with:
-            username: ziadmo
-            password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # 2. Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-        # 3. Build Docker image
-        - name: Build Docker image
-          run: |
-            docker build \
-              --build-arg HF_TOKEN=${{ secrets.HF_TOKEN }} \
-              --build-arg HF_REPO_ID=${{ secrets.HF_REPO_ID }} \
-              -t ziadmo/med-report-api:latest \
-              -t ziadmo/med-report-api:${{ github.sha }} \
-              .
+      # 3. Build and push image (with layer caching)
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          build-args: |
+            HF_TOKEN=${{ secrets.HF_TOKEN }}
+            HF_REPO_ID=${{ secrets.HF_REPO_ID }}
+          cache-from: type=registry,ref=${{ env.CACHE_IMAGE }}
+          cache-to: type=registry,ref=${{ env.CACHE_IMAGE }},mode=max
 
-        # 4. Push to Docker Hub
-        - name: Push to Docker Hub
-          run: |
-            docker push ziadmo/med-report-api:latest
-            docker push ziadmo/med-report-api:${{ github.sha }}
+      # 4. Configure AWS credentials (via OIDC)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-        # 4. Configure AWS credentials (via OIDC)
-        - name: Configure AWS credentials
-          uses: aws-actions/configure-aws-credentials@v4
-          with:
-            role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-            aws-region: ${{ env.AWS_REGION }}
+      # 5. Inject the new image into the task definition
+      - name: Update ECS task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition-family: ${{ env.TASK_DEFINITION_FAMILY }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
 
-        # 5. Inject the new image into the task definition
-        - name: Update ECS task definition with new image
-          id: task-def
-          uses: aws-actions/amazon-ecs-render-task-definition@v1
-          with:
-            task-definition-family: ${{ env.TASK_DEFINITION_FAMILY }}
-            container-name: ${{ env.CONTAINER_NAME }}
-            image: ziadmo/med-report-api:${{ github.sha }}
+      # 6. Register new task definition
+      - name: Register task definition
+        id: register-task
+        run: |
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://${{ steps.task-def.outputs.task-definition }} \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-        # 6. Deploy updated task definition to ECS
-        - name: Deploy to ECS
-          uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-          with:
-            task-definition: ${{ steps.task-def.outputs.task-definition }}
-            service: ${{ env.ECS_SERVICE }}
-            cluster: ${{ env.ECS_CLUSTER }}
-            force-new-deployment: true
-            wait-for-service-stability: true
+      # 7. Update service to use new task definition
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --task-definition ${{ steps.register-task.outputs.task_def_arn }} \
+            --force-new-deployment
