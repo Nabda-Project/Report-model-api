@@ -71,12 +71,17 @@ jobs:
           image: ziadmo/med-report-api:${{ github.sha }}
 
       # 7. Register new task definition
-      - name: Deploy to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: ${{ env.ECS_SERVICE }}
-          cluster: ${{ env.ECS_CLUSTER }}
+      - name: Register task definition
+        id: register-task
+        run: |
+          cat ${{ steps.task-def.outputs.task-definition }} | \
+            jq 'del(.tags)' > /tmp/task-def-clean.json
+
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file:///tmp/task-def-clean.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
       # 8. Update service to use new task definition
       - name: Update ECS service
