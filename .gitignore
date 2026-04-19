@@ -3,8 +3,10 @@ __pycache__/
 *.pyo
 .env
 .env.*
+!.env.example
 *.gguf
 *.bin
 *.safetensors
 model/
 .DS_Store
+forbidden_stuff/
