@@ -1,8 +1,8 @@
 # Med Report API
 
-A production-ready REST API that serves a fine-tuned Qwen3 model on Azure.
+A production-ready REST API that serves a fine-tuned Qwen3 model on AWS EC2.
 Takes text input, returns a structured JSON medical report for doctors.
-Auto-deploys on every GitHub push via GitHub Actions.
+Async job queue — POST /generate returns a job_id, then poll GET /result/{job_id}.
 
 ---
 
@@ -13,10 +13,11 @@ Report-model-api/
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml      # CI/CD — auto deploys on push to main
-├── app.py                  # FastAPI server
+├── app.py                  # FastAPI server (async job queue)
 ├── Dockerfile              # Container definition
 ├── requirements.txt        # Python dependencies
-├── azure-setup.sh          # One-time Azure setup script
+├── deploy.sh               # EC2 deployment script
+├── .env.example            # Required environment variables
 ├── .gitignore              # Keeps model files out of GitHub
 └── README.md               # This file
 ```
@@ -32,9 +33,9 @@ GitHub Actions builds Docker image
         ↓
 Image pushed to Docker Hub (ziadmo/med-report-api)
         ↓
-Azure Container Instance pulls and runs the image
+EC2 instance pulls and runs the image
         ↓
-API is live at a public IP
+API is live at http://<your-ec2-elastic-ip>:8000
 ```
 
 ## Updating the Model
@@ -52,9 +53,9 @@ git push origin main
 
 ### Base URL
 ```
-http://<your-azure-ip>:8000
+http://<your-ec2-elastic-ip>:8000
 ```
-Find your IP in the Azure Portal → Container Instances → med-report-api → IP address.
+Find your Elastic IP in the AWS Console → EC2 → Elastic IPs.
 
 ### Endpoints
 
@@ -78,17 +79,67 @@ X-API-Key: your-secret-api-key
 }
 ```
 
-**Response**
+**Response** (returns immediately — the job runs in the background)
 ```json
 {
+  "job_id": "a1b2c3d4-...",
+  "status": "queued",
+  "poll_url": "/result/a1b2c3d4-..."
+}
+```
+
+#### Get Result
+```
+GET /result/{job_id}
+```
+
+**Headers**
+```
+X-API-Key: your-secret-api-key
+```
+
+**Response (still processing)**
+```json
+{
+  "job_id": "a1b2c3d4-...",
+  "status": "processing"
+}
+```
+
+**Response (completed)**
+```json
+{
+  "job_id": "a1b2c3d4-...",
+  "status": "completed",
   "result": {
-    "patient_name": "...",
-    "age": 45,
-    "symptoms": ["..."],
-    ...
+    "symptoms": [
+      { "symptom": "chest pain", "severity": "moderate" }
+    ],
+    "notes": "..."
   }
 }
 ```
+
+**Response (failed)**
+```json
+{
+  "job_id": "a1b2c3d4-...",
+  "status": "failed",
+  "error": "No valid JSON found in model output"
+}
+```
+
+### Async Flow
+
+The API uses an async job queue — inference can take several seconds, so the API never blocks:
+
+1. **Submit** — `POST /generate` with your text. Returns a `job_id` immediately.
+2. **Poll** — `GET /result/{job_id}` to check status. Repeat until status is `completed` or `failed`.
+3. **Result** — Once `completed`, the response includes the full structured report.
+
+Possible statuses: `queued` → `processing` → `completed` | `failed`
+
+Jobs are automatically cleaned up after 1 hour.
 
 ---
 
@@ -96,7 +147,10 @@ X-API-Key: your-secret-api-key
 
 ```javascript
 const generateReport = async (inputText) => {
-  const response = await fetch("http://<your-azure-ip>:8000/generate", {
+  const BASE = "http://<your-ec2-elastic-ip>:8000";
+
+  // 1. Submit the job
+  const res = await fetch(`${BASE}/generate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -105,54 +159,60 @@ const generateReport = async (inputText) => {
     body: JSON.stringify({ text: inputText })
   });
 
-  if (!response.ok) throw new Error("API error");
+  if (!res.ok) throw new Error("API error");
+  const { job_id } = await res.json();
 
-  const data = await response.json();
-  return data.result; // your JSON report
+  // 2. Poll until completed or failed
+  while (true) {
+    const poll = await fetch(`${BASE}/result/${job_id}`, {
+      headers: { "X-API-Key": "your-secret-api-key" }
+    });
+    const data = await poll.json();
+
+    if (data.status === "completed") return data.result;
+    if (data.status === "failed") throw new Error(data.error);
+
+    await new Promise((r) => setTimeout(r, 2000)); // wait 2s before next poll
+  }
 };
 ```
 
 ## Calling from Python
 
 ```python
-import requests
+import requests, time
 
-response = requests.post(
-    "http://<your-azure-ip>:8000/generate",
-    headers={"X-API-Key": "your-secret-api-key"},
+BASE = "http://<your-ec2-elastic-ip>:8000"
+HEADERS = {"X-API-Key": "your-secret-api-key"}
+
+# 1. Submit the job
+res = requests.post(
+    f"{BASE}/generate",
+    headers=HEADERS,
     json={"text": "Patient is a 45 year old male with chest pain..."}
 )
+job_id = res.json()["job_id"]
 
-report = response.json()["result"]
+# 2. Poll until completed or failed
+while True:
+    result = requests.get(f"{BASE}/result/{job_id}", headers=HEADERS).json()
+    if result["status"] == "completed":
+        report = result["result"]
+        break
+    elif result["status"] == "failed":
+        raise RuntimeError(result["error"])
+    time.sleep(2)
 ```
-
----
-
-## Rolling Back to a Previous Version
-
-Every deploy is tagged with its commit SHA. To roll back:
-
-```bash
-# Find the SHA of the version you want
-git log --oneline
-
-# Roll back to that version
-az container create \
-  --name med-report-api \
-  --resource-group med-report-rg \
-  --image ziadmo/med-report-api:<commit-sha> \
-  --cpu 2 --memory 8 \
-  --ports 8000 \
-  --ip-address public \
-  --environment-variables API_KEY="your-key" \
-  --restart-policy Always
 ```
 
 ---
 
 ## Environment Variables
 
+Set these before running `deploy.sh`. See `.env.example` for a template.
+
 | Variable | Description |
 |---|---|
+| `HF_TOKEN` | HuggingFace access token (to download the model) |
+| `HF_REPO_ID` | HuggingFace repo ID, e.g. `your-username/qwen3-doctor` |
 | `API_KEY` | Secret key to protect your endpoint |
-| `MODEL_PATH` | Path to model inside container (default: `/app/model`) |
