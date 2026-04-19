@@ -2,17 +2,21 @@ import os
 import json
 import re
 import logging
+import uuid
+import threading
+import queue
+import time
 from fastapi import FastAPI, HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
-from llama_cpp import Llama, LlamaGrammar  # Added LlamaGrammar
+from llama_cpp import Llama, LlamaGrammar
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── App & Auth ────────────────────────────────────────────────────────────────
-app = FastAPI(title="Med Report API", version="1.0.0")
+app = FastAPI(title="Med Report API", version="2.0.0")
 
 API_KEY = os.environ.get("API_KEY", "change-me-please")
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=True)
@@ -33,7 +37,6 @@ logger.info(f"Loading model from {GGUF_PATH} ...")
 llm = Llama(model_path=GGUF_PATH, n_ctx=2048, n_threads=4, verbose=False)
 
 # ── Grammar Setup ─────────────────────────────────────────────────────────────
-# Define the expected JSON structure globally so it's only compiled once
 MED_SCHEMA = {
     "type": "object",
     "properties": {
@@ -52,34 +55,81 @@ MED_SCHEMA = {
     },
     "required": ["symptoms", "notes"],
 }
-# Pre-compile the grammar for speed
 grammar = LlamaGrammar.from_json_schema(json.dumps(MED_SCHEMA))
-
 logger.info("Model and Grammar loaded successfully.")
 
 
-# ── Schemas ───────────────────────────────────────────────────────────────────
-class GenerateRequest(BaseModel):
-    text: str
-    max_tokens: int = 512
+# ── Job Queue System ──────────────────────────────────────────────────────────
+jobs: dict = {}
+job_queue: queue.Queue = queue.Queue()
+JOB_TTL_SECONDS = 3600  # auto-cleanup after 1 hour
 
 
-class GenerateResponse(BaseModel):
-    result: dict
+def cleanup_old_jobs():
+    now = time.time()
+    expired = [
+        jid for jid, job in jobs.items()
+        if now - job["created_at"] > JOB_TTL_SECONDS
+    ]
+    for jid in expired:
+        del jobs[jid]
+    if expired:
+        logger.info(f"Cleaned up {len(expired)} expired jobs")
+
+
+def worker():
+    """Background worker — processes one job at a time."""
+    while True:
+        job_id = job_queue.get()
+
+        if job_id not in jobs:
+            continue
+
+        job = jobs[job_id]
+        job["status"] = "processing"
+        logger.info(f"[{job_id}] Processing...")
+
+        try:
+            prompt = f"<|im_start|>user\n{job['text']}\n<|im_start|>assistant\n"
+
+            output = llm(
+                prompt,
+                max_tokens=job["max_tokens"],
+                temperature=0.1,
+                grammar=grammar,
+                echo=False,
+            )
+
+            raw_output = output["choices"][0]["text"]
+            logger.info(f"[{job_id}] Raw output: {raw_output[:200]}")
+
+            result = extract_json(raw_output)
+            job["status"] = "completed"
+            job["result"] = result
+            logger.info(f"[{job_id}] Completed successfully")
+
+        except Exception as e:
+            logger.error(f"[{job_id}] Failed: {e}")
+            job["status"] = "failed"
+            job["error"] = str(e)
+
+        cleanup_old_jobs()
+        job_queue.task_done()
+
+
+worker_thread = threading.Thread(target=worker, daemon=True)
+worker_thread.start()
+logger.info("Background worker started.")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def extract_json(text: str) -> dict:
-    """Extract the first valid JSON object from model output."""
-    # Try direct parse first
     text_clean = text.strip()
     try:
         return json.loads(text_clean)
     except json.JSONDecodeError:
         pass
 
-    # Use NON-GREEDY match (.*?) to find the FIRST complete JSON object
-    # This prevents grabbing multiple looped objects at once
     match = re.search(r"(\{.*?\})", text, re.DOTALL)
     if match:
         try:
@@ -90,36 +140,81 @@ def extract_json(text: str) -> dict:
     raise ValueError(f"No valid JSON found in model output:\n{text}")
 
 
+# ── Schemas ───────────────────────────────────────────────────────────────────
+class GenerateRequest(BaseModel):
+    text: str
+    max_tokens: int = 512
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Always responds instantly — never blocked by inference."""
+    return {
+        "status": "ok",
+        "queue_size": job_queue.qsize(),
+        "total_jobs": len(jobs),
+    }
 
 
-@app.post("/generate", response_model=GenerateResponse)
+@app.post("/generate")
 def generate(req: GenerateRequest, key: str = Security(verify_api_key)):
-    try:
-        # 1. Improved prompt with a newline to trigger better generation
-        prompt = f"<|im_start|>user\n{req.text}\n<|im_start|>assistant\n"
+    """
+    Submit a job — returns immediately with a job_id.
+    Client polls GET /result/{job_id} for the answer.
+    """
+    job_id = str(uuid.uuid4())
 
-        # 2. Augmented LLM call
-        output = llm(
-            prompt,
-            max_tokens=req.max_tokens,
-            temperature=0.1,
-            grammar=grammar,  # Forces valid JSON and stops loops
-            echo=False,
-        )
+    jobs[job_id] = {
+        "status": "queued",
+        "text": req.text,
+        "max_tokens": req.max_tokens,
+        "result": None,
+        "error": None,
+        "created_at": time.time(),
+    }
 
-        raw_output = output["choices"][0]["text"]
-        logger.info(f"Raw model output: {raw_output[:200]}")
+    job_queue.put(job_id)
+    logger.info(f"[{job_id}] Job queued (queue size: {job_queue.qsize()})")
 
-        # 3. Process result
-        result = extract_json(raw_output)
-        return GenerateResponse(result=result)
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "poll_url": f"/result/{job_id}",
+    }
 
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        logger.error(f"Generation error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/result/{job_id}")
+def get_result(job_id: str, key: str = Security(verify_api_key)):
+    """
+    Poll for result.
+    Returns status: queued | processing | completed | failed
+    """
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = jobs[job_id]
+    response = {"job_id": job_id, "status": job["status"]}
+
+    if job["status"] == "completed":
+        response["result"] = job["result"]
+    elif job["status"] == "failed":
+        response["error"] = job["error"]
+    elif job["status"] == "queued":
+        response["position"] = job_queue.qsize()
+
+    return response
+
+
+@app.get("/jobs")
+def list_jobs(key: str = Security(verify_api_key)):
+    """List all active jobs — useful for debugging."""
+    return {
+        "total": len(jobs),
+        "queue_size": job_queue.qsize(),
+        "jobs": {
+            jid: {"status": j["status"], "created_at": j["created_at"]}
+            for jid, j in jobs.items()
+        },
+    }
