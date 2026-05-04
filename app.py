@@ -29,9 +29,7 @@ def verify_api_key(key: str = Security(api_key_header)):
 
 
 # ── Load Model ────────────────────────────────────────────────────────────────
-GGUF_PATH = os.environ.get(
-    "GGUF_PATH", "/app/model/qwen3-4b-doctor-assistant.Q4_K_M.gguf"
-)
+GGUF_PATH = os.environ.get("GGUF_PATH", "/app/model/qwen3-4b-dr-assistant.Q4_K_M.gguf")
 
 logger.info(f"Loading model from {GGUF_PATH} ...")
 llm = Llama(model_path=GGUF_PATH, n_ctx=2048, n_threads=4, verbose=False)
@@ -47,13 +45,30 @@ MED_SCHEMA = {
                 "properties": {
                     "symptom": {"type": "string"},
                     "severity": {"type": ["string", "null"]},
+                    "duration": {"type": ["string", "null"]},
                 },
-                "required": ["symptom", "severity"],
+                "required": ["symptom", "severity", "duration"],
             },
         },
-        "notes": {"type": "string"},
+        "old_diagnosis": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "medication": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "dosage": {"type": ["string", "null"]},
+                    "frequency": {"type": ["string", "null"]},
+                },
+                "required": ["name", "dosage", "frequency"],
+            },
+        },
+        "notes": {"type": ["string", "null"]},
     },
-    "required": ["symptoms", "notes"],
+    "required": ["symptoms", "old_diagnosis", "medication", "notes"],
 }
 grammar = LlamaGrammar.from_json_schema(json.dumps(MED_SCHEMA))
 logger.info("Model and Grammar loaded successfully.")
@@ -68,8 +83,7 @@ JOB_TTL_SECONDS = 3600  # auto-cleanup after 1 hour
 def cleanup_old_jobs():
     now = time.time()
     expired = [
-        jid for jid, job in jobs.items()
-        if now - job["created_at"] > JOB_TTL_SECONDS
+        jid for jid, job in jobs.items() if now - job["created_at"] > JOB_TTL_SECONDS
     ]
     for jid in expired:
         del jobs[jid]
@@ -147,7 +161,6 @@ class GenerateRequest(BaseModel):
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
-
 @app.get("/health")
 def health():
     """Always responds instantly — never blocked by inference."""
