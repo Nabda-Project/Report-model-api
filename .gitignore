@@ -9,4 +9,3 @@ __pycache__/
 *.safetensors
 model/
 .DS_Store
-forbidden_stuff/
