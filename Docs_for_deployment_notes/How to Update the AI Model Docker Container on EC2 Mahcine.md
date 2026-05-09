@@ -52,3 +52,7 @@ Wait for the INFO: Uvicorn running on http://0.0.0.0:8000 message, then press Ct
 Bash
 curl http://localhost:8000/health
 (Expected output: {"status":"ok","queue_size":0,"total_jobs":0})
+
+
+
+ssh -i "med-report-key-2.pem" ubuntu@100.51.212.220
