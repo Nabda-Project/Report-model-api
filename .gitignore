@@ -9,3 +9,10 @@ __pycache__/
 *.safetensors
 model/
 .DS_Store
+
+# Secrets, private keys, and reports
+*.pem
+*.key
+*.ppk
+forbidden_stuff/
+gitleaks-report.json
